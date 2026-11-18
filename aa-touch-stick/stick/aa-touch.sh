@@ -2670,7 +2670,19 @@ hmi_emergency() {
     safe_reboot
     exit 0
 }
-if [ -f "$RESTORE" ]; then
+has_restore_marker() {
+    local e
+    [ -f "$RESTORE" ] && return 0
+    for e in "$USB"/*; do
+        [ -f "$e" ] || continue
+        case "${e##*/}" in
+            [Mm][Ii][Aa][Tt][Oo][Ff][Ff]-[Rr][Ee][Ss][Tt][Oo][Rr][Ee]|\
+            [Mm][Ii][Aa][Tt][Oo][Ff][Ff]-[Rr][Ee][Ss][Tt][Oo][Rr][Ee].[Tt][Xx][Tt]) return 0 ;;
+        esac
+    done
+    return 1
+}
+if has_restore_marker; then
     hmi_emergency "MIATOFF-RESTORE on the stick"
 fi
 

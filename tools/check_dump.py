@@ -157,6 +157,40 @@ class Dump:
         path = self.path / rel
         return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
 
+    def nvram(self, key: str):
+        path = self.path / "runtime" / "nvram" / key
+        if path.is_file():
+            val = path.read_text(encoding="utf-8", errors="replace").strip()
+            return val or None
+        val = self.summary.get(f"NVRAM {key}")
+        return val.strip() if val else None
+
+    def region(self):
+        ini = self.text("static/files/jci/version.ini")
+        match = re.search(r'^JCI_SW_VER="(NA|EU|JP|ADR|4A)_', ini, re.M)
+        if not match:
+            return None
+        return "ADR" if match.group(1) == "4A" else match.group(1)
+
+
+NVRAM_OK = ("enable", "disable", "absent")
+
+
+def has_switched_sm_backup(listing: str, sm_other: str) -> bool:
+    """True when /data_persist/miatoff/aa-touch/backup holds the inactive SM config."""
+    if f"miatoff/aa-touch/backup/{sm_other}" in listing:
+        return True
+    in_backup = False
+    for line in listing.splitlines():
+        stripped = line.strip()
+        if stripped.endswith(":"):
+            in_backup = stripped[:-1].rstrip("/").endswith("miatoff/aa-touch/backup")
+        elif not stripped:
+            in_backup = False
+        elif in_backup and stripped.split()[-1] == sm_other:
+            return True
+    return False
+
 
 def state_of(digest, stock: str, patched: str):
     if digest is None:
@@ -210,18 +244,36 @@ def check(dump_path: Path, pinned: dict = None) -> dict:
     comps["touchtune"] = result({"stock": AVAILABLE, "patched": INSTALLED, "unknown": BLOCKED}.get(common, UNCHECKED),
                                 {"stock": "Common.js is stock", "patched": "Common.js has the TouchTune edit",
                                  "unknown": "Common.js is an unknown version"}.get(common, "Common.js not in this dump"))
+    bus_nv = dump.nvram("bus_bcm_speed_restriction")
+    lvds_nv = dump.nvram("lvds_speed_restriction")
+    if comps["touchtune"]["state"] in (AVAILABLE, INSTALLED):
+        bad_nv = next(((k, v) for k, v in (("bus_bcm_speed_restriction", bus_nv), ("lvds_speed_restriction", lvds_nv))
+                       if v is not None and v not in NVRAM_OK), None)
+        if bad_nv:
+            comps["touchtune"] = {"state": BLOCKED, "detail": f"NVRAM {bad_nv[0]} has unexpected value ({bad_nv[1]})"}
+        elif common == "patched" and any(v in ("enable", "absent") for v in (bus_nv, lvds_nv) if v is not None):
+            comps["touchtune"] = {"state": PARTIAL,
+                                  "detail": "Common.js has the TouchTune edit, but NVRAM speed restriction is not disabled: run REPAIR/REMOVE"}
+        elif common == "stock" and "disable" in (bus_nv, lvds_nv):
+            comps["touchtune"] = result(AVAILABLE, "Common.js is stock (NVRAM speed restriction already disabled)")
 
     # The installer only changes the config the Service Manager runs on.
     sm_path = sm_path if sm_path in SM_CONFIGS else "/jci/sm/sm.conf"
     sm_name = sm_path.rsplit("/", 1)[1]
+    sm_other = "sm.conf" if sm_name == "sm_WCP.conf" else "sm_WCP.conf"
     sm_digest = dump.sha(sm_path)
     variant = sm_variants(pin, SM_CONFIGS[sm_path]).get(sm_digest) if sm_digest else None
     xml = state_of(dump.sha("/etc/aap_system_attributes.xml"), pin.get("XML_STOCK"), pin.get("XML_PATCHED"))
     ucp = state_of(dump.sha("/etc/aap_system_attributes_UCP.xml"), pin.get("UCP_STOCK"), pin.get("UCP_PATCHED"))
+    listing = dump.text("runtime/data_persist-ls.txt")
     if sm_digest is None or UNCHECKED in (xml, ucp):
         comps["aa_touch"] = {"state": UNCHECKED, "detail": "needs a FULL dump"}
         for key in TRIM_KEYS:
             comps[key] = {"state": UNCHECKED, "detail": "needs a FULL dump"}
+    elif has_switched_sm_backup(listing, sm_other):
+        switched = f"backup was made under {sm_other}; switch wireless CarPlay back, run REMOVE, then switch again"
+        for key in ("aa_touch", *TRIM_KEYS):
+            comps[key] = {"state": BLOCKED, "detail": switched}
     elif variant is None or "unknown" in (xml, ucp):
         comps["aa_touch"] = {"state": BLOCKED, "detail": f"{sm_name} or an AAP XML is not a known version"}
         for key in TRIM_KEYS:
@@ -229,7 +281,6 @@ def check(dump_path: Path, pinned: dict = None) -> dict:
     else:
         aa_on, mask = variant
         parts = [aa_on, xml == "patched", ucp == "patched"]
-        listing = dump.text("runtime/data_persist-ls.txt")
         if all(parts):
             shim = "libpatch-blmjciaapa.so.off" in listing and "libpatch-blmjciaapa.so\n" not in listing
             comps["aa_touch"] = result(INSTALLED, "installed, switched off" if shim else "installed")
@@ -269,6 +320,11 @@ def check(dump_path: Path, pinned: dict = None) -> dict:
     comps["menu"] = result({"stock": AVAILABLE, "patched": INSTALLED, "unknown": BLOCKED}.get(menu, UNCHECKED),
                            {"stock": "all sources are listed", "patched": "the sources you stop at boot are hidden",
                             "unknown": "systemApp.js is an unknown version"}.get(menu, "needs a FULL dump"))
+    sys_attrs = dump.attrs("/jci/gui/apps/system/js/systemApp.js")
+    if sys_attrs not in (None, *OK_ATTRS):
+        for key in ("warning", "menu"):
+            if comps[key]["state"] in (AVAILABLE, INSTALLED):
+                comps[key] = {"state": BLOCKED, "detail": f"systemApp.js has unexpected permissions ({sys_attrs})"}
 
     delay = state_of(dump.sha("/jci/gui/common/controls/List2/js/List2Ctrl.js"), pin.get("LIST_STOCK"), pin.get("LIST_PATCHED"))
     comps["delay"] = result({"stock": AVAILABLE, "patched": INSTALLED, "unknown": BLOCKED}.get(delay, UNCHECKED),
@@ -308,6 +364,12 @@ def check(dump_path: Path, pinned: dict = None) -> dict:
         comps["meters"] = result(INSTALLED, "installed")
     else:
         comps["meters"] = {"state": PARTIAL, "detail": "half installed: run the stick's REPAIR/REMOVE"}
+    if comps["meters"]["state"] in (AVAILABLE, INSTALLED, PARTIAL):
+        for path in ("/jci/opera/opera_home/opera.ini", "/jci/scripts/stage_gap2.sh"):
+            attrs = dump.attrs(path)
+            if attrs not in (None, *OK_ATTRS):
+                comps["meters"] = {"state": BLOCKED, "detail": f"{path} has unexpected permissions ({attrs})"}
+                break
 
     if not blocked and all(g["ok"] for g in gates) and all(c["state"] != UNCHECKED for c in comps.values()):
         overall = "supported"
@@ -315,8 +377,11 @@ def check(dump_path: Path, pinned: dict = None) -> dict:
         overall = "not supported"
     else:
         overall = "incomplete"
+    unit = {"region": dump.region(),
+            "wcp": (active.group(1) == "/jci/sm/sm_WCP.conf") if active else None,
+            "nvram_disabled": (common == "stock" and "disable" in (bus_nv, lvds_nv))}
     fingerprint = hashlib.sha256("".join(f"{k} {v}\n" for k, v in sorted(dump.evidence.items())).encode()).hexdigest()
-    return {"dump": dump.path.name, "mode": dump.summary.get("mode", "?"), "overall": overall,
+    return {"dump": dump.path.name, "mode": dump.summary.get("mode", "?"), "overall": overall, "unit": unit,
             "gates": gates, "components": {k: comps[k] for k, _ in COMPONENTS}, "fingerprint": fingerprint}
 
 

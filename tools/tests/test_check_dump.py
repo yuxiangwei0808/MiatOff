@@ -207,6 +207,57 @@ def main():
         v = verdict(make_dump(base / "list", **{"list": b"other"}))
         check(states(v)["delay"] == "blocked" and states(v)["warning"] == "available", "an unknown List2Ctrl.js blocks only the delay")
 
+        # Permission parity with aa-touch.sh on systemApp.js, opera.ini and stage_gap2.sh (root 775 0 0 is OK, 644 is blocked)
+        for name, path, blocked_keys in (
+                ("perm-sys", "/jci/gui/apps/system/js/systemApp.js", ("warning", "menu")),
+                ("perm-opera", "/jci/opera/opera_home/opera.ini", ("meters",)),
+                ("perm-gap2", "/jci/scripts/stage_gap2.sh", ("meters",))):
+            d = make_dump(base / name)
+            (d / "inventory/key-files.tsv").write_text(
+                (d / "inventory/key-files.tsv").read_text() + f"{path}\t1\t644 1000 1000\t1:1\tx\t{sha((d / 'static/files' / path.lstrip('/')).read_bytes())}\n")
+            v = verdict(d)
+            check(all(states(v)[k] == "blocked" for k in blocked_keys) and v["overall"] == "supported",
+                  f"{name}: bad permissions block {blocked_keys}")
+        d = make_dump(base / "perm-root-ok")
+        (d / "inventory/key-files.tsv").write_text(
+            (d / "inventory/key-files.tsv").read_text()
+            + f"/jci/gui/apps/system/js/systemApp.js\t1\t775 0 0\t1:1\tx\t{sha(FILES['sys_stock'])}\n"
+            + f"/jci/opera/opera_home/opera.ini\t1\t775 0 0\t1:1\tx\t{sha(FILES['opera_stock'])}\n")
+        v = verdict(d)
+        check(states(v)["warning"] == "available" and states(v)["meters"] == "available", "root-owned 775 0 0 is accepted")
+
+        # Switched Wireless CarPlay backup (/data_persist/miatoff/aa-touch/backup holds the inactive SM config)
+        d = make_dump(base / "wcp-switched", active=wcp)
+        (d / "runtime/data_persist-ls.txt").write_text(
+            "/data_persist/miatoff/aa-touch/backup:\n-r--r--r-- 1 0 0 10 Jan 1 00:00 sm.conf\n")
+        v = verdict(d)
+        check(states(v)["aa_touch"] == "blocked" and states(v)["trim_dvdtv"] == "blocked"
+              and "sm.conf" in v["components"]["aa_touch"]["detail"] and states(v)["meters"] == "available",
+              "switched Wireless CarPlay backup blocks AA touch and boot trims")
+
+        # NVRAM speed-restriction states (service-menu trick, partial TouchTune, corrupt NVRAM) and unit metadata
+        d = make_dump(base / "nvram-svc")
+        (d / "runtime/nvram").mkdir()
+        (d / "runtime/nvram/lvds_speed_restriction").write_text("disable\n")
+        (d / "runtime/nvram/bus_bcm_speed_restriction").write_text("disable\n")
+        (d / "static/files/jci/version.ini").write_text('JCI_SW_VER="NA_74.00.324A"\n')
+        v = verdict(d)
+        check(states(v)["touchtune"] == "available" and "already disabled" in v["components"]["touchtune"]["detail"]
+              and v["unit"] == {"region": "NA", "wcp": False, "nvram_disabled": True},
+              "NVRAM already disabled + NA region detected cleanly")
+
+        d = make_dump(base / "nvram-partial", **{"common": FILES["common_patched"]})
+        (d / "runtime/nvram").mkdir()
+        (d / "runtime/nvram/lvds_speed_restriction").write_text("enable\n")
+        v = verdict(d)
+        check(states(v)["touchtune"] == "partial", "Common.js patched with NVRAM still enabled is partial")
+
+        d = make_dump(base / "nvram-bad")
+        (d / "runtime/nvram").mkdir()
+        (d / "runtime/nvram/bus_bcm_speed_restriction").write_text("corrupt\n")
+        v = verdict(d)
+        check(states(v)["touchtune"] == "blocked", "corrupt NVRAM blocks TouchTune")
+
         v = verdict(make_dump(base / "ours", preload="3492\tL_jciAAPA\tLD_PRELOAD=" + cd.OURS_PRELOAD + "\n",
                               state="patched", sm="sm_aa_trim"))
         check(v["overall"] == "supported", "our own LD_PRELOAD is not foreign")

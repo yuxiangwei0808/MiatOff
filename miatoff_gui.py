@@ -627,6 +627,13 @@ class App(tk.Tk):
         self.paragraph(advanced, "Allows Install and Remove for every tweak, for when the car has changed since the check. This "
                                  "only skips the guidance on this computer: the installer on the car still checks the real "
                                  "files and changes nothing it does not recognise.", font=SMALL)
+        tk.Frame(advanced, bg=LINE, height=1).pack(fill="x", padx=20, pady=(0, 10))
+        row = tk.Frame(advanced, bg=CARD)
+        row.pack(anchor="w", padx=20, pady=(0, 6))
+        self.job_button(row, "Make emergency restore stick", "Plain.TButton", self.build_restore).pack(side="left")
+        self.paragraph(advanced, "Writes an emergency HMI restore stick (with MIATOFF-RESTORE) that reverts Meters, the startup "
+                                 "warning, hidden menu entries and the list delay without needing a dialog on the car screen.",
+                       font=SMALL)
 
     def _row(self, parent, key, title, description, install_label, remove_label, first=False):
         if not first:
@@ -799,7 +806,12 @@ class App(tk.Tk):
             tk.Label(self.review_lines, text=line[1], bg=CARD, fg=INK, font=BODY, anchor="w").grid(
                 row=at, column=1, sticky="w", pady=3)
             at += 1
-        for note in stickflow.dependency_notes(choices, self.states):
+        try:
+            car_profile = self.car_profile.get()
+        except Exception:
+            car_profile = None
+        unit = (self.verdict or {}).get("unit")
+        for note in stickflow.dependency_notes(choices, self.states, unit, car_profile):
             WrapLabel(self.review_lines, text="!  " + note, bg=CARD, fg=WARN, font=SMALL).grid(
                 row=at, column=0, columnspan=2, sticky="ew", pady=(8, 0))
             at += 1
@@ -1408,6 +1420,46 @@ class App(tk.Tk):
 
     def verify(self):
         self.run("verify")
+
+    def build_restore(self):
+        target = self.target()
+        if target is None:
+            return
+        try:
+            found = stickwriter.foreign_entries(target)
+            if found:
+                messagebox.showerror("MiatOff", stickwriter._foreign_text(found))
+                return
+            kit = kits.install_kit()
+            previous = stickwriter.replaces(target, kit.id_name)
+            extra = (f"\n\nThis USB stick holds the MiatOff {previous} files. They will be replaced; "
+                     "check results and logs on the stick stay.") if previous else ""
+            if not messagebox.askyesno(
+                    "MiatOff",
+                    f"Write an emergency HMI restore stick ({stickwriter.RESTORE_MARKER}) to {target}?\n\n"
+                    "In the car this immediately reverts Meters, the startup warning, hidden menu entries and the "
+                    f"list delay to stock without showing a dialog, then restarts the screen.{extra}"):
+                return
+
+            def report(label, _stage):
+                self.job_label = label
+
+            def work():
+                stickkit.require_stick_root(target)
+                stickwriter.write_restore(kit, target, progress=report)
+
+            self.start_job("Writing the emergency restore stick…", work, self._restore_written)
+        except stickkit.StickError as error:
+            messagebox.showerror("MiatOff", str(error).removeprefix("ERROR: "))
+        except Exception as error:
+            messagebox.showerror("MiatOff", f"{type(error).__name__}: {error}")
+
+    def _restore_written(self, _result, error):
+        if error:
+            self.show_failure(error)
+        else:
+            self._show_drive_status()
+            self.notice = (f"✓  Emergency restore stick ({stickwriter.RESTORE_MARKER}) ready. Eject it safely.", OK)
 
 
 if __name__ == "__main__":

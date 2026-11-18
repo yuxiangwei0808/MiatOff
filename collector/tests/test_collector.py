@@ -258,6 +258,9 @@ def main():
               "service writes live.txt")
         seq1 = int(read_live(work).get("LiveSeq", "0"))
         check(wait_for(lambda: int(read_live(work).get("LiveSeq", "0")) > seq1, 10), "live.txt keeps being rewritten")
+        check((work / "out/miatoff-collector.sh").is_file(), "daemon collector copies itself to $OUT_DIR (tmpfs)")
+        cmdline = sh(work, "tr '\\000' ' ' < /proc/$(cat W/out/collector.pid)/cmdline 2>/dev/null").stdout
+        check("out/miatoff-collector.sh" in cmdline, f"daemon collector runs from $OUT_DIR, not rootfs ({cmdline.strip()})")
         second = sh(work, "MO_OUT_DIR=W/out MO_DBUS_MONITOR=W/bin/dbus-monitor MO_SMDB_READ=W/bin/smdb-read "
                           "MO_DATA=W/data sh W/miatoff-collector.sh; echo rc=$?")
         check("rc=0" in second.stdout, f"a second instance exits at once ({second.stdout.strip()[-60:]})")

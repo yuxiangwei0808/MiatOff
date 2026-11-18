@@ -38,7 +38,7 @@ COMPONENTS = [
          "Blank it", "Show it again"),
         ("sensors", "Parking sensor graphics", "Semi-transparent parking sensor graphics (MZD-AIO), so the camera picture shows through.",
          "Install", "Remove"),
-        ("menu", "Hide trimmed items in the menu", "Also hide the sources you stop at boot (DVD/TV, SiriusXM, Pandora, Stitcher, Aha) in the Entertainment menu. Later changes to the boot trim are followed.",
+        ("menu", "Hide trimmed items in the menu", "Also hide the sources you stop at boot (DVD/TV, SiriusXM, Pandora, Stitcher, Aha) in the Entertainment menu. Later changes to the boot trim are followed. Experimental: not tested in a car yet.",
          "Hide them", "Show them again"),
     ]),
 ]
@@ -102,7 +102,25 @@ def change_lines(choices: dict, states: dict = None) -> list:
     return lines
 
 
-def dependency_notes(choices: dict, states: dict = None) -> list:
+REGION_TEXT = {"NA": "North America", "EU": "Europe", "JP": "Japan", "ADR": "ADR"}
+
+
+def unit_facts(unit: dict) -> str:
+    """Plain-English facts detected from the car's check dump."""
+    if not unit:
+        return ""
+    parts = []
+    region = REGION_TEXT.get(unit.get("region"))
+    if region:
+        parts.append(f"{region} firmware")
+    if unit.get("wcp") is True:
+        parts.append("Wireless CarPlay active")
+    if unit.get("nvram_disabled") is True:
+        parts.append("NVRAM speed restriction already disabled")
+    return ", ".join(parts)
+
+
+def dependency_notes(choices: dict, states: dict = None, unit: dict = None, car_profile=None) -> list:
     """Things worth knowing about this combination. Nothing is ever selected for the user."""
     states = states or {}
     installed = lambda key: states.get(key) == "installed"
@@ -115,6 +133,19 @@ def dependency_notes(choices: dict, states: dict = None) -> list:
         if not stopping:
             notes.append("Hide trimmed items only hides sources you stop at boot. None are stopped yet, so the menu "
                          "stays the same until you stop one.")
+    if unit:
+        if unit.get("region") == "NA" and choices.get("trim_sirius") == "install":
+            notes.append("This car has North American firmware: stopping SiriusXM at boot disables satellite radio.")
+        if unit.get("wcp") is True and (choices.get("aa_touch") == "install" or
+                                        any(choices.get(key) == "install" for key in TRIM_KEYS)):
+            notes.append("Wireless CarPlay is active (sm_WCP.conf). Do not switch Wireless CarPlay off in Mazda settings "
+                         "while Android Auto touch or boot trims are installed: remove them here first, then switch.")
+        if unit.get("nvram_disabled") is True and choices.get("touchtune") == "install":
+            notes.append("Speed restriction in NVRAM is already disabled on this car (for example via the diagnostic menu). "
+                         "TouchTune will keep that entry state in its backup and patch Common.js.")
+        if choices.get("meters") == "install" and car_profile is None:
+            notes.append("Meters still uses the default ND1 1.5 (7500 rpm) setup. If your car is an ND1 2.0 or ND2, set "
+                         "your car under Design your Meters → Project → Car setup.")
     return notes
 
 
@@ -133,8 +164,10 @@ def check_summary(verdict: dict) -> dict:
     """A check result in plain English: kind (ok | warn | bad), title, body and the reasons."""
     overall = verdict["overall"]
     if overall == "supported":
+        facts = unit_facts(verdict.get("unit"))
+        extra = f" Detected: {facts}." if facts else ""
         return {"kind": "ok", "title": "Your car can be tweaked",
-                "body": "Every check passed. Continue to choose your tweaks. The car checks each file again before changing it.",
+                "body": "Every check passed. Continue to choose your tweaks. The car checks each file again before changing it." + extra,
                 "reasons": []}
     if overall == "not supported":
         reasons = [GATE_TEXT.get(gate["name"], gate["name"]) for gate in verdict.get("gates", []) if gate["ok"] is False]
@@ -178,7 +211,7 @@ def car_line(profile) -> str:
 # meters_library.SOUND_STYLES). Custom pages have their own switch in the designer.
 SOUND_STYLES = (("street", "Street"), ("track", "Track"), ("cyber", "Cyberpunk"), ("y2077", "2077"),
                 ("y2077n", "2077 Night"))
-SOUND_LABEL = "Shift sound (a short tone at the shift point):"
+SOUND_LABEL = "Shift sound (a short tone at the shift point; experimental, not tested in a car yet):"
 
 
 def sound_line(styles) -> str:

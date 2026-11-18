@@ -233,6 +233,17 @@ def test_refusals():
         refused(stick, install_kit(), "MIATOFF-RESTORE", "the marker is found in any case: FAT does not care")
     with_stick(lower_case_restore)
 
+    def txt_restore(stick):
+        add(stick, "MIATOFF-RESTORE.txt", b"")
+        refused(stick, install_kit(), "MIATOFF-RESTORE", "MIATOFF-RESTORE.txt (e.g. from Notepad) is protected too")
+        check(stickwriter.stick_issue(stick) is not None, "MIATOFF-RESTORE.txt is flagged up front")
+        kit = install_kit()
+        stickwriter.write_restore(kit, stick)
+        check(kit.verify(stick) == [] and (stick / "MIATOFF-RESTORE").read_bytes() == b""
+              and not (stick / "MIATOFF-RESTORE.txt").exists(),
+              "write_restore builds a verified emergency restore stick and normalises the marker")
+    with_stick(txt_restore)
+
     def full(stick):
         usage = shutil.disk_usage(stick)
         with patch.object(stickwriter.shutil, "disk_usage", return_value=usage._replace(free=1000)):

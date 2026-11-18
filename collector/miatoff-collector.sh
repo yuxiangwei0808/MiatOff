@@ -98,7 +98,10 @@ fast_pipeline() {
     fast_awk < "$FIFO" &
     AWK_PID=$!
     wait "$AWK_PID"
-    [ -z "$MON_PID" ] || kill "$MON_PID" 2>/dev/null     # awk ended first: do not leave the monitor behind
+    if [ -n "$MON_PID" ]; then
+        kill "$MON_PID" 2>/dev/null     # awk ended first: do not leave the monitor behind
+        wait "$MON_PID" 2>/dev/null
+    fi
     MON_PID=
     AWK_PID=
     rm -f "$FIFO"
@@ -159,11 +162,22 @@ fast_awk() {
 }
 
 stop() {
+    local n=0
     trap '' TERM INT HUP
     log "stopping"
     [ -z "$MON_PID" ] || kill "$MON_PID" 2>/dev/null         # awk then sees end of input, flushes, exits
     [ -z "$SLOW_PID" ] || kill "$SLOW_PID" 2>/dev/null       # the loop only, never smdb-read
-    [ -z "$AWK_PID" ] || wait "$AWK_PID" 2>/dev/null
+    if [ -n "$AWK_PID" ]; then
+        # If MON_PID ended before opening the FIFO, fast_awk's subshell can block
+        # opening the read end; bound the wait and terminate it if still stuck.
+        while kill -0 "$AWK_PID" 2>/dev/null && [ "$n" -lt 10 ]; do
+            sleep 0.1 2>/dev/null || sleep 1
+            n=$((n + 1))
+        done
+        kill -0 "$AWK_PID" 2>/dev/null && kill "$AWK_PID" 2>/dev/null
+        wait "$AWK_PID" 2>/dev/null
+    fi
+    [ -z "$MON_PID" ] || wait "$MON_PID" 2>/dev/null
     rm -f "$PIDFILE" "$SLOW.tmp" "$FIFO"
     exit 0
 }
@@ -173,6 +187,14 @@ old=$(cat "$PIDFILE" 2>/dev/null)
 if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null && \
     tr '\000' ' ' < "/proc/$old/cmdline" 2>/dev/null | grep -q 'miatoff-collector'; then
     exit 0      # already running
+fi
+# Run from $OUT_DIR (tmpfs) so ash never keeps a file on the rootfs open.
+SELF="$OUT_DIR/miatoff-collector.sh"
+if [ "$ONESHOT" != 1 ] && [ "$0" != "$SELF" ] && [ -r "$0" ] && [ -x /bin/sh ]; then
+    if cp "$0" "$SELF.tmp" 2>/dev/null && mv -f "$SELF.tmp" "$SELF" 2>/dev/null; then
+        exec /bin/sh "$SELF" "$@"
+    fi
+    rm -f "$SELF.tmp" 2>/dev/null
 fi
 echo $$ > "$PIDFILE"
 renice -n 5 -p $$ >/dev/null 2>&1 || true

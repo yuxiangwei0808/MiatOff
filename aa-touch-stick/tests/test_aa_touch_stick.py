@@ -1453,8 +1453,35 @@ def main():
             check(r.returncode == 0 and car.digest() == before and "nothing to revert" in log,
                   "MIATOFF-RESTORE left on the stick: nothing to do, no restart")
             (car.stick / "MIATOFF-RESTORE").unlink()
+            car.run("disc_off")
+            (car.stick / "MIATOFF-RESTORE.txt").write_text("")
+            r = car.run("cancel")
+            check(r.returncode == 0 and car.state("disclaimer:") == "stock",
+                  "MIATOFF-RESTORE.txt also triggers the emergency HMI revert")
+            (car.stick / "MIATOFF-RESTORE.txt").unlink()
             r = car.run("remove")
             check(r.returncode == 0 and car.digest() == stock_digest, "after the emergency: byte-exact stock")
+
+        # --- emergency HMI restore marker (.txt and case-insensitive) without needing Docker
+        car = fresh(base, "restore-txt")
+        stock_digest = car.digest()
+        car.run("disc_off")
+        car.run("delay_on")
+        car.run("install")
+        (car.stick / "MIATOFF-RESTORE.txt").write_text("")
+        r = car.run("cancel")
+        check(r.returncode == 0 and car.state("disclaimer:") == "stock" and car.state("list delay:") == "stock"
+              and car.state() == "installed",
+              "MIATOFF-RESTORE.txt reverts warning and list delay, keeps AA touch")
+        (car.stick / "MIATOFF-RESTORE.txt").unlink()
+        car.run("disc_off")
+        (car.stick / "miatoff-restore.txt").write_text("")
+        r = car.run("cancel")
+        check(r.returncode == 0 and car.state("disclaimer:") == "stock" and car.state() == "installed",
+              "case-insensitive miatoff-restore.txt also triggers the emergency HMI revert")
+        (car.stick / "miatoff-restore.txt").unlink()
+        r = car.run("remove")
+        check(r.returncode == 0 and car.digest() == stock_digest, "after MIATOFF-RESTORE.txt: byte-exact stock")
 
         # --- one stick: step 1 TouchTune (real 1.2.1 release, its test mode), step 2 AA touch
         car = fresh(base, "touchtune-handoff")

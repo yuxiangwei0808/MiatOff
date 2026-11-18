@@ -47,6 +47,7 @@ KNOWN_KITS = {
                            ("touchtune", "oem-aa-mod", "miatoff-app", "images")),
 }
 RESTORE_MARKER = "MIATOFF-RESTORE"
+RESTORE_MARKERS = ("miatoff-restore", "miatoff-restore.txt")
 TEMP_SUFFIX = ".mo-tmp"
 CLUSTER = 32 * 1024           # the largest cluster FAT32 uses on a stick of 32 GB or less
 SPACE_MARGIN = 1024 * 1024
@@ -110,6 +111,10 @@ def foreign_entries(target: Path, entries=None) -> list:
     return found
 
 
+def _has_restore_marker(entries) -> bool:
+    return any(not _sidecar(name) and name.lower() in RESTORE_MARKERS for name in entries)
+
+
 def _restore_text(_target=None) -> str:
     return (f"This USB stick has a file named {RESTORE_MARKER}. In the car it undoes the Meters and startup-warning "
             "changes without asking, so MiatOff will not write to this stick. If you no longer need that, delete the "
@@ -126,7 +131,7 @@ def stick_issue(root):
     """What would stop MiatOff from writing to this stick, in plain English; None if nothing does."""
     try:
         entries = os.listdir(long_path(root))
-        if RESTORE_MARKER.lower() in (name.lower() for name in entries):
+        if _has_restore_marker(entries):
             return _restore_text()
         found = foreign_entries(Path(root), entries)
     except OSError:
@@ -263,7 +268,7 @@ def _clear_kit(target: Path, id_name: str, keep: set, manifest: dict) -> None:
         _remove(target, id_name)
 
 
-def _write(kit, target: Path, plan, step) -> None:
+def _write(kit, target: Path, plan, step, restore: bool = False) -> None:
     payload = kit.payload()
     launcher = kit.launcher_name()
     last = (launcher, TRIGGER, MANIFEST)
@@ -271,7 +276,7 @@ def _write(kit, target: Path, plan, step) -> None:
 
     step("inspect")
     entries = os.listdir(long_path(target))
-    if RESTORE_MARKER.lower() in (name.lower() for name in entries):
+    if not restore and _has_restore_marker(entries):
         raise StickError(_restore_text())
     found = foreign_entries(target, entries)
     if found:
@@ -290,6 +295,10 @@ def _write(kit, target: Path, plan, step) -> None:
     _remove_sidecars(target)
     _remove(target, TRIGGER)
     _remove(target, PLAN_NAME)
+    if restore:
+        for name in entries:
+            if not _sidecar(name) and name.lower() in RESTORE_MARKERS:
+                _remove(target, name)
     _remove_leftovers(target)
 
     step("clear")
@@ -305,7 +314,11 @@ def _write(kit, target: Path, plan, step) -> None:
     _write_file(target, MANIFEST, payload[MANIFEST])
 
     step("plan")
-    if plan is not None:
+    if restore:
+        _write_file(target, RESTORE_MARKER, b"")
+        if not _same(target, RESTORE_MARKER, b""):
+            raise StickError("ERROR: read-back verification of MIATOFF-RESTORE failed")
+    elif plan is not None:
         text = plan.encode("ascii")
         _write_file(target, PLAN_NAME, text)
         if not _same(target, PLAN_NAME, text):
@@ -315,6 +328,8 @@ def _write(kit, target: Path, plan, step) -> None:
     for name, data in {**body, MANIFEST: payload[MANIFEST]}.items():
         if not _same(target, name, data):
             raise StickError(f"ERROR: read-back verification failed for {name[:60]}. Try again, or use another stick.")
+    if restore and not _same(target, RESTORE_MARKER, b""):
+        raise StickError("ERROR: read-back verification of MIATOFF-RESTORE failed")
     _write_file(target, TRIGGER, payload[TRIGGER])
     _write_file(target, launcher, payload[launcher])
     _remove_sidecars(target)
@@ -324,7 +339,7 @@ def _write(kit, target: Path, plan, step) -> None:
         raise StickError("ERROR: read-back verification failed. Try again, or use another stick.")
 
 
-def write(kit, target: Path, plan: str = None, progress=None) -> None:
+def write(kit, target: Path, plan: str = None, progress=None, restore: bool = False) -> None:
     """Put kit on the stick. plan is the text of miatoff-plan.txt, if any; progress(label) reports each stage."""
     target = Path(target)
     if not target.is_dir():
@@ -338,10 +353,15 @@ def write(kit, target: Path, plan: str = None, progress=None) -> None:
             progress(STAGE_LABEL[stage], stage)
 
     try:
-        _write(kit, target, plan, step)
+        _write(kit, target, plan, step, restore=restore)
     except OSError as error:
         reason = ("the USB stick is full" if error.errno == errno.ENOSPC else
                   "the USB stick stopped responding or was unplugged")
         state = ("Nothing was changed." if reached[-1:] == ["inspect"] else
                  "A half-written stick is switched off, so it does nothing in the car.")
         raise StickError(f"Writing failed: {reason}. {state} Plug it back in and try again. ({error.strerror or error})") from error
+
+
+def write_restore(kit, target: Path, progress=None) -> None:
+    """Write an emergency HMI restore stick (install kit + empty MIATOFF-RESTORE, verified before the launcher)."""
+    write(kit, target, plan=None, progress=progress, restore=True)

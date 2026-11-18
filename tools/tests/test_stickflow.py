@@ -77,11 +77,26 @@ def test_dependencies():
     check(not stickflow.dependency_notes({**choices, "trim_aha": "install"}), "no note when a source is being stopped")
     check(not stickflow.dependency_notes(choices, {"trim_aha": "installed"}), "no note when a source is already stopped")
     check(stickflow.dependency_notes({**choices, "trim_aha": "remove"}, {"trim_aha": "installed"}) != [], "a source being restarted does not count")
+    na_wcp = {"region": "NA", "wcp": True, "nvram_disabled": True}
+    notes = stickflow.dependency_notes({"trim_sirius": "install", "touchtune": "install", "meters": "install"},
+                                       unit=na_wcp, car_profile=None)
+    check(any("North American" in n and "SiriusXM" in n for n in notes), "NA unit warns before stopping SiriusXM")
+    check(any("Wireless CarPlay" in n for n in notes), "Wireless CarPlay unit warns against toggling WCP while trims are on")
+    check(any("NVRAM" in n for n in notes), "NVRAM already disabled is explained when installing TouchTune")
+    check(any("ND1 1.5" in n and "ND2" in n for n in notes), "default ND1 1.5 car setup is flagged when installing Meters")
+    check(not any("ND1 1.5" in n for n in stickflow.dependency_notes(
+        {"meters": "install"}, unit=na_wcp, car_profile={"label": "ND2 2.0"})), "setting a car profile clears the default warning")
+    check("experimental" in stickflow.ITEMS["menu"][2].lower() and "experimental" in stickflow.SOUND_LABEL.lower(),
+          "tweaks not yet tested in a car say so in the UI")
 
 
 def test_check_wording():
     summary = stickflow.check_summary({"overall": "supported", "gates": []})
     check(summary["kind"] == "ok" and "sha" not in summary["body"].lower(), "a good result is plain English")
+    with_unit = stickflow.check_summary({"overall": "supported", "gates": [],
+                                         "unit": {"region": "NA", "wcp": True, "nvram_disabled": False}})
+    check("North America firmware" in with_unit["body"] and "Wireless CarPlay active" in with_unit["body"]
+          and "sha" not in with_unit["body"].lower(), "detected region and Wireless CarPlay are shown in plain English")
     failed = {"overall": "not supported", "gates": [{"name": "firmware", "ok": False, "detail": "x"}, {"name": "x", "ok": True, "detail": ""}]}
     summary = stickflow.check_summary(failed)
     check(summary["kind"] == "bad" and summary["reasons"] == [stickflow.GATE_TEXT["firmware"]], "only the failed checks are named")

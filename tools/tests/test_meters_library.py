@@ -588,6 +588,18 @@ class LibraryLocationTests(unittest.TestCase):
         self.assertFalse((self.root / "roam" / "MiatOff" / ml.DB_NAME).exists())
 
 
+def _can_open_tk() -> bool:
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        root.destroy()
+        return True
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(_can_open_tk(), "Tk display unavailable (run under xvfb-run on headless Linux)")
 class GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -969,6 +981,33 @@ class GuiTests(unittest.TestCase):
         app.refresh_custom_meters()
         self.assertEqual(app.custom_notice.winfo_manager(), "pack")
         self.assertIn("1 older saved theme", app.custom_notice.cget("text"))
+
+    def test_emergency_restore_stick_button_writes_restore_marker_and_refuses_foreign_kits(self):
+        import kits
+        gui, app = self.make_app()
+        self.pick_stick(app)
+        foreign = self.path / "install-patches.sh"
+        foreign.write_text("#!/bin/sh\n")
+        with patch.object(gui.messagebox, "showerror") as error, patch.object(gui.messagebox, "askyesno") as ask:
+            app.build_restore()
+        error.assert_called_once()
+        ask.assert_not_called()
+        foreign.unlink()
+
+        keep_me = self.path / "notes.txt"
+        keep_me.write_text("personal file")
+
+        def job(_label, work, done):
+            done(*gui.stickflow.run_captured(work))
+        with patch.object(app, "start_job", side_effect=job), patch.object(gui.stickkit, "require_stick_root"), \
+             patch.object(gui.messagebox, "askyesno", return_value=True) as ask, patch.object(gui.messagebox, "showerror") as error:
+            app.build_restore()
+        error.assert_not_called()
+        ask.assert_called_once()
+        self.assertEqual(kits.install_kit().verify(self.path), [])
+        self.assertTrue((self.path / "MIATOFF-RESTORE").is_file())
+        self.assertFalse((self.path / "miatoff-plan.txt").exists())
+        self.assertEqual(keep_me.read_text(), "personal file")
 
 
 if __name__ == "__main__":
